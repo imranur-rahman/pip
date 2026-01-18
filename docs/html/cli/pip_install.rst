@@ -222,6 +222,14 @@ terms of version number - see the
 
 See the :ref:`pip install Examples<pip install Examples>`.
 
+Release Cutoff
+--------------
+
+``--before`` limits index candidates to releases uploaded on or before a cutoff
+timestamp (ISO 8601; UTC assumed if no timezone is provided). This only applies
+to index-hosted candidates and does not affect local files or direct URLs. If a
+release timestamp is missing, the candidate remains eligible.
+
 .. _`0-ssl certificate verification`:
 .. rubric:: SSL Certificate Verification
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import datetime
+
 from pip._internal.models.format_control import FormatControl
 
 
@@ -17,6 +19,7 @@ class SelectionPreferences:
         "format_control",
         "prefer_binary",
         "ignore_requires_python",
+        "before",
     ]
 
     # Don't include an allow_yanked default value to make sure each call
@@ -30,6 +33,7 @@ class SelectionPreferences:
         format_control: FormatControl | None = None,
         prefer_binary: bool = False,
         ignore_requires_python: bool | None = None,
+        before: datetime.datetime | None = None,
     ) -> None:
         """Create a SelectionPreferences object.
 
@@ -42,6 +46,8 @@ class SelectionPreferences:
             dist over a new source dist.
         :param ignore_requires_python: Whether to ignore incompatible
             "Requires-Python" values in links. Defaults to False.
+        :param before: Only consider index releases uploaded on or before this
+            UTC timestamp.
         """
         if ignore_requires_python is None:
             ignore_requires_python = False
@@ -51,3 +57,4 @@ class SelectionPreferences:
         self.format_control = format_control
         self.prefer_binary = prefer_binary
         self.ignore_requires_python = ignore_requires_python
+        self.before = before

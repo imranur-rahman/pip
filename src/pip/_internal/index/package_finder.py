@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import datetime
 import enum
 import functools
 import itertools
 import logging
+import posixpath
 import re
+import urllib.parse
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import (
@@ -31,6 +34,7 @@ from pip._internal.index.collector import LinkCollector, parse_links
 from pip._internal.metadata import select_backend
 from pip._internal.models.candidate import InstallationCandidate
 from pip._internal.models.format_control import FormatControl
+from pip._internal.models.index import PyPI, TestPyPI
 from pip._internal.models.link import Link
 from pip._internal.models.search_scope import SearchScope
 from pip._internal.models.selection_prefs import SelectionPreferences
@@ -44,6 +48,7 @@ from pip._internal.utils.logging import indent_log
 from pip._internal.utils.misc import build_netloc
 from pip._internal.utils.packaging import check_requires_python
 from pip._internal.utils.unpacking import SUPPORTED_EXTENSIONS
+from pip._internal.network.utils import raise_for_status
 
 if TYPE_CHECKING:
     from typing_extensions import TypeGuard
@@ -599,6 +604,7 @@ class PackageFinder:
         format_control: FormatControl | None = None,
         candidate_prefs: CandidatePreferences | None = None,
         ignore_requires_python: bool | None = None,
+        before: datetime.datetime | None = None,
     ) -> None:
         """
         This constructor is primarily meant to be used by the create() class
@@ -620,6 +626,10 @@ class PackageFinder:
         self._ignore_requires_python = ignore_requires_python
         self._link_collector = link_collector
         self._target_python = target_python
+        self._before = before
+        self._release_time_cache: dict[
+            tuple[str, str], dict[Version, datetime.datetime]
+        ] = {}
 
         self.format_control = format_control
 
@@ -667,6 +677,7 @@ class PackageFinder:
             allow_yanked=selection_prefs.allow_yanked,
             format_control=selection_prefs.format_control,
             ignore_requires_python=selection_prefs.ignore_requires_python,
+            before=selection_prefs.before,
         )
 
     @property
@@ -806,6 +817,121 @@ class PackageFinder:
 
         return candidates
 
+    def _build_project_url(self, index_url: str, project_name: str) -> str:
+        location = posixpath.join(
+            index_url, urllib.parse.quote(canonicalize_name(project_name))
+        )
+        if not location.endswith("/"):
+            location = location + "/"
+        return location
+
+    def _get_before_index_page_map(self, project_name: str) -> dict[str, str]:
+        before_index_urls: dict[str, str] = {}
+        for index_url in self.search_scope.index_urls:
+            normalized = index_url.rstrip("/")
+            if normalized == PyPI.simple_url.rstrip("/"):
+                before_index_urls[index_url] = PyPI.pypi_url
+            elif normalized == TestPyPI.simple_url.rstrip("/"):
+                before_index_urls[index_url] = TestPyPI.pypi_url
+
+        return {
+            self._build_project_url(index_url, project_name): json_base
+            for index_url, json_base in before_index_urls.items()
+        }
+
+    def _get_release_times(
+        self, project_name: str, json_base: str
+    ) -> dict[Version, datetime.datetime]:
+        cache_key = (json_base, canonicalize_name(project_name))
+        if cache_key in self._release_time_cache:
+            return self._release_time_cache[cache_key]
+
+        if self._before is None:
+            self._release_time_cache[cache_key] = {}
+            return self._release_time_cache[cache_key]
+
+        url = f"{json_base}/{urllib.parse.quote(cache_key[1])}/json"
+        try:
+            response = self._link_collector.session.get(
+                url, headers={"Accept": "application/json"}
+            )
+            raise_for_status(response)
+            payload = response.json()
+        except Exception as exc:
+            logger.debug(
+                "Skipping --before for %s: failed to fetch release times: %s",
+                project_name,
+                exc,
+            )
+            self._release_time_cache[cache_key] = {}
+            return self._release_time_cache[cache_key]
+
+        release_times: dict[Version, datetime.datetime] = {}
+        for version_str, files in payload.get("releases", {}).items():
+            try:
+                version = parse_version(version_str)
+            except InvalidVersion:
+                continue
+
+            best_time: datetime.datetime | None = None
+            for file_info in files or []:
+                if not isinstance(file_info, dict):
+                    continue
+                timestamp = (
+                    file_info.get("upload_time_iso_8601")
+                    or file_info.get("upload_time")
+                )
+                if not timestamp:
+                    continue
+                try:
+                    parsed = datetime.datetime.fromisoformat(
+                        timestamp.replace("Z", "+00:00")
+                    )
+                except ValueError:
+                    continue
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+                else:
+                    parsed = parsed.astimezone(datetime.timezone.utc)
+                if best_time is None or parsed < best_time:
+                    best_time = parsed
+
+            if best_time is not None:
+                release_times[version] = best_time
+
+        self._release_time_cache[cache_key] = release_times
+        return release_times
+
+    def _filter_candidates_before(
+        self,
+        project_name: str,
+        candidates: list[InstallationCandidate],
+        index_page_to_json_base: dict[str, str],
+    ) -> list[InstallationCandidate]:
+        if self._before is None or not index_page_to_json_base:
+            return candidates
+
+        filtered: list[InstallationCandidate] = []
+        for candidate in candidates:
+            page_url = candidate.link.comes_from
+            if not page_url or page_url not in index_page_to_json_base:
+                filtered.append(candidate)
+                continue
+
+            json_base = index_page_to_json_base[page_url]
+            release_times = self._get_release_times(project_name, json_base)
+            release_time = release_times.get(candidate.version)
+            if release_time is None or release_time <= self._before:
+                filtered.append(candidate)
+            else:
+                logger.debug(
+                    "Skipping %s %s: uploaded after --before",
+                    project_name,
+                    candidate.version,
+                )
+
+        return filtered
+
     def process_project_url(
         self, project_url: Link, link_evaluator: LinkEvaluator
     ) -> list[InstallationCandidate]:
@@ -856,6 +982,12 @@ class PackageFinder:
             if source is not None
         )
         page_candidates = list(page_candidates_it)
+        if self._before is not None:
+            page_candidates = self._filter_candidates_before(
+                project_name,
+                page_candidates,
+                self._get_before_index_page_map(project_name),
+            )
 
         file_links_it = itertools.chain.from_iterable(
             source.file_links()

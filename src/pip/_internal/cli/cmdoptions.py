@@ -11,6 +11,7 @@ pass on state. To be consistent, all options will follow this design.
 # mypy: strict-optional=False
 from __future__ import annotations
 
+import datetime
 import logging
 import os
 import pathlib
@@ -651,6 +652,33 @@ def _handle_python_version(
     parser.values.python_version = version_info
 
 
+def _parse_before(value: str) -> datetime.datetime:
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(
+            "expected ISO 8601 format (for example: 2024-03-01 or "
+            "2024-03-01T12:30:00Z)"
+        ) from exc
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+
+    return parsed.astimezone(datetime.timezone.utc)
+
+
+def _handle_before(
+    option: Option, opt_str: str, value: str, parser: OptionParser
+) -> None:
+    try:
+        parsed = _parse_before(value)
+    except ValueError as exc:
+        msg = f"invalid --before value: {value!r}: {exc}"
+        raise_option_error(parser, option=option, msg=msg)
+
+    parser.values.before = parsed
+
+
 python_version: Callable[..., Option] = partial(
     Option,
     "--python-version",
@@ -668,6 +696,22 @@ python_version: Callable[..., Option] = partial(
     integers (e.g. "3" for 3.0.0, "3.7" for 3.7.0, or "3.7.3"). A major-minor
     version can also be given as a string without dots (e.g. "37" for 3.7.0).
     """
+    ),
+)
+
+
+before: Callable[..., Option] = partial(
+    Option,
+    "--before",
+    dest="before",
+    metavar="datetime",
+    action="callback",
+    callback=_handle_before,
+    type="str",
+    default=None,
+    help=(
+        "Only consider index releases uploaded on or before this date/time. "
+        "Accepts ISO 8601; UTC is assumed if no timezone is provided."
     ),
 )
 
@@ -1119,5 +1163,6 @@ index_group: dict[str, Any] = {
         extra_index_url,
         no_index,
         find_links,
+        before,
     ],
 }

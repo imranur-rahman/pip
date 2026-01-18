@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import pathlib
@@ -93,6 +94,7 @@ def make_test_finder(
     allow_all_prereleases: bool = False,
     session: PipSession | None = None,
     target_python: TargetPython | None = None,
+    before: datetime.datetime | None = None,
 ) -> PackageFinder:
     """
     Create a PackageFinder for testing purposes.
@@ -105,6 +107,7 @@ def make_test_finder(
     selection_prefs = SelectionPreferences(
         allow_yanked=True,
         allow_all_prereleases=allow_all_prereleases,
+        before=before,
     )
 
     return PackageFinder.create(

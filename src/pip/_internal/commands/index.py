@@ -98,6 +98,7 @@ class IndexCommand(IndexGroupCommand):
             format_control=options.format_control,
             allow_all_prereleases=options.pre,
             ignore_requires_python=ignore_requires_python,
+            before=options.before,
         )
 
         return PackageFinder.create(

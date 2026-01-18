@@ -1,3 +1,4 @@
+import datetime
 import logging
 from collections.abc import Iterable
 from unittest.mock import Mock, patch
@@ -575,3 +576,81 @@ def test_find_all_candidates_find_links_and_index(data: TestData) -> None:
     versions = finder.find_all_candidates("simple")
     # first the find-links versions then the page versions
     assert [str(v.version) for v in versions] == ["3.0", "2.0", "1.0", "1.0"]
+
+
+def test_before_filters_index_candidates() -> None:
+    cutoff = datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)
+    page_url = "https://pypi.org/simple/simple/"
+    candidates = [
+        InstallationCandidate(
+            "simple",
+            "1.0",
+            Link(
+                "https://files.pythonhosted.org/packages/simple-1.0.tar.gz",
+                comes_from=page_url,
+            ),
+        ),
+        InstallationCandidate(
+            "simple",
+            "2.0",
+            Link(
+                "https://files.pythonhosted.org/packages/simple-2.0.tar.gz",
+                comes_from=page_url,
+            ),
+        ),
+        InstallationCandidate(
+            "simple",
+            "3.0",
+            Link(
+                "https://files.pythonhosted.org/packages/simple-3.0.tar.gz",
+                comes_from=page_url,
+            ),
+        ),
+    ]
+    release_times = {
+        parse_version("1.0"): cutoff - datetime.timedelta(days=1),
+        parse_version("2.0"): cutoff + datetime.timedelta(days=1),
+    }
+
+    finder = make_test_finder(before=cutoff)
+    finder._get_release_times = Mock(return_value=release_times)
+
+    filtered = finder._filter_candidates_before(
+        "simple",
+        candidates,
+        {page_url: "https://pypi.org/pypi"},
+    )
+    assert [str(c.version) for c in filtered] == ["1.0", "3.0"]
+
+
+def test_before_does_not_filter_non_index_candidates() -> None:
+    cutoff = datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)
+    page_url = "https://pypi.org/simple/simple/"
+    candidates = [
+        InstallationCandidate(
+            "simple",
+            "1.0",
+            Link(
+                "https://files.pythonhosted.org/packages/simple-1.0.tar.gz",
+                comes_from=page_url,
+            ),
+        ),
+        InstallationCandidate(
+            "simple",
+            "9.0",
+            Link("file:///tmp/simple-9.0.tar.gz"),
+        ),
+    ]
+    release_times = {
+        parse_version("1.0"): cutoff + datetime.timedelta(days=1),
+    }
+
+    finder = make_test_finder(before=cutoff)
+    finder._get_release_times = Mock(return_value=release_times)
+
+    filtered = finder._filter_candidates_before(
+        "simple",
+        candidates,
+        {page_url: "https://pypi.org/pypi"},
+    )
+    assert [str(c.version) for c in filtered] == ["9.0"]

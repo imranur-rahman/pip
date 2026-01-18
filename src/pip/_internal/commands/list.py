@@ -158,6 +158,7 @@ class ListCommand(IndexGroupCommand):
         selection_prefs = SelectionPreferences(
             allow_yanked=False,
             allow_all_prereleases=options.pre,
+            before=options.before,
         )
 
         return PackageFinder.create(
